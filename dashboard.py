@@ -46,36 +46,64 @@ def load_and_clean_data():
     str_cols = ['Status', 'HM Details', 'Skill', 'Location of posting', 'Recruiter Name', 'Candidate Name']
     for col in str_cols:
         if col in df.columns:
-            df[col] = df[col].astype(str).str.strip()
+            # Use pandas "string" dtype so missing values stay as <NA> (not the literal "nan")
+            df[col] = df[col].astype("string").str.strip()
 
     # Convert Date
     df['Sourcing Date'] = pd.to_datetime(df['Sourcing Date'], errors='coerce')
 
     # Define Grouping Logic
-    selected_list = ['selected', 'Joined', 'Internship letter shared', 'Yes']
-    rejected_list = ['Rejected', 'Rejected in R1', 'Rejected in R2', 'Rejected in technical screening', 'Offer Declined...']
-    screening_list = ['Screening reject']
-    pending_list = ['In process', 'Under discussion', 'Shortlisted', 'Pending at R1', 'Pending at R2', 'Pending at R3', 'on hold', 'Scheduled for R1', 'Scheduled for R2', 'Scheduled for R3']
+    selected_list = {'selected', 'joined', 'internship letter shared', 'yes'}
+    rejected_list = {'rejected', 'rejected in r1', 'rejected in r2', 'rejected in technical screening', 'offer declined...'}
+    screening_list = {'screening reject'}
+    pending_list = {
+        'in process', 'under discussion', 'shortlisted',
+        'pending at r1', 'pending at r2', 'pending at r3',
+        'on hold',
+        'scheduled for r1', 'scheduled for r2', 'scheduled for r3',
+    }
 
     def categorize_status(row):
-        status = row['Status']
+        status = row.get('Status')
         r1, r2, r3 = row.get('Status of R1'), row.get('Status of R2'), row.get('Status of R3')
-        
-        if status in selected_list: return 'Selected'
-        if status in screening_list: return 'Screening Reject'
-        
-        if status in rejected_list or 'Rejected' in str(status):
-            if pd.isna(r1) and pd.isna(r2) and pd.isna(r3):
-                return 'Screening Reject'
-            elif r1 == 'Not Cleared': return 'R1 Reject'
-            elif r2 == 'Not Cleared': return 'R2 Reject'
-            elif r3 == 'Not Cleared': return 'R3 Reject'
-            return 'Other Reject'
-            
-        if any(p in str(status) for p in pending_list): return 'Pending/Active'
-        return 'Other'
 
-    df['Dashboard_Category'] = df.apply(categorize_status, axis=1)
+        # Normalize text safely
+        status_txt = "" if pd.isna(status) else str(status).strip()
+        status_lc = status_txt.lower()
+        r1_txt = "" if pd.isna(r1) else str(r1).strip()
+        r2_txt = "" if pd.isna(r2) else str(r2).strip()
+        r3_txt = "" if pd.isna(r3) else str(r3).strip()
+        
+        # Treat blanks as Pending (requested)
+        if status_txt == "" or status_lc == "nan":
+            return ('Pending/Active', None)
+
+        if status_lc in selected_list:
+            return ('Selected', None)
+        if status_lc in screening_list:
+            return ('Screening Reject', None)
+        
+        # Determine reject round (but we’ll consolidate by default in the charts)
+        reject_round = None
+        if r1_txt == 'Not Cleared':
+            reject_round = 'R1'
+        elif r2_txt == 'Not Cleared':
+            reject_round = 'R2'
+        elif r3_txt == 'Not Cleared':
+            reject_round = 'R3'
+
+        if status_lc in rejected_list or ('rejected' in status_lc):
+            # If no round info, treat as screening reject (keeps your prior behavior)
+            if reject_round is None and (r1_txt == "" and r2_txt == "" and r3_txt == ""):
+                return ('Screening Reject', None)
+            return ('Rejected', reject_round)
+            
+        if status_lc in pending_list:
+            return ('Pending/Active', None)
+
+        return ('Other', None)
+
+    df[['Dashboard_Category', 'Reject_Round']] = df.apply(categorize_status, axis=1, result_type='expand')
     return df
 
 df_raw = load_and_clean_data()
@@ -97,6 +125,18 @@ with st.sidebar:
     recruiter_filter = st.multiselect("Recruiter", options=df_raw['Recruiter Name'].unique())
     name_search = st.text_input("Search Candidate Name")
 
+    # Reject view controls
+    reject_view = st.selectbox(
+        "Rejects View",
+        options=["Combined (default)", "By Round"],
+        help="Default combines all rejects into one bucket. 'By Round' breaks rejects into R1/R2/R3.",
+    )
+    reject_round_filter = st.selectbox(
+        "Reject Round (when 'By Round')",
+        options=["All", "R1", "R2", "R3"],
+        disabled=(reject_view != "By Round"),
+    )
+
 # Apply Filters
 df = df_raw.copy()
 if len(date_range) == 2:
@@ -107,6 +147,25 @@ if loc_filter: df = df[df['Location of posting'].isin(loc_filter)]
 if recruiter_filter: df = df[df['Recruiter Name'].isin(recruiter_filter)]
 if name_search: df = df[df['Candidate Name'].str.contains(name_search, case=False)]
 
+# Build a chart-friendly category that consolidates rejects by default
+df_chart = df.copy()
+if reject_view == "Combined (default)":
+    df_chart["Chart_Category"] = df_chart["Dashboard_Category"].where(
+        df_chart["Dashboard_Category"] != "Rejected", "Rejected"
+    )
+else:
+    # Break rejects into R1/R2/R3 when possible
+    def _chart_category(row):
+        if row["Dashboard_Category"] != "Rejected":
+            return row["Dashboard_Category"]
+        rr = row.get("Reject_Round")
+        return f"{rr} Reject" if rr in {"R1", "R2", "R3"} else "Other Reject"
+
+    df_chart["Chart_Category"] = df_chart.apply(_chart_category, axis=1)
+    if reject_round_filter != "All":
+        # In by-round mode, optionally focus charts on just one round of rejects
+        df_chart = df_chart[df_chart["Chart_Category"] == f"{reject_round_filter} Reject"]
+
 # 4. Main Dashboard UI
 st.title("Candidate Clearance Overview")
 
@@ -116,7 +175,7 @@ m1, m2, m3, m4 = st.columns(4)
 # Data for blocks
 total_val = len(df)
 selected_val = len(df[df['Dashboard_Category'] == 'Selected'])
-rejected_val = len(df[df['Dashboard_Category'].str.contains('Reject')])
+rejected_val = len(df[df['Dashboard_Category'] == 'Rejected'])
 pending_val = len(df[df['Dashboard_Category'] == 'Pending/Active'])
 
 # Rendering Blocks
@@ -150,29 +209,52 @@ blue_palette = ['#003f5c', '#2f4b7c', '#665191', '#a05195', '#d45087']
 
 with col_left:
     st.subheader("HM Performance Breakdown")
-    hm_data = df.groupby(['HM Details', 'Dashboard_Category']).size().reset_index(name='Count')
-    
-    # Using specific blue shades for different categories
-    fig_hm = px.bar(hm_data, x='Count', y='HM Details', color='Dashboard_Category',
-                   orientation='h', 
-                   color_discrete_map={
-                       'Selected': '#1A5276',        # Dark Blue
-                       'Pending/Active': '#3498DB',  # Bright Blue
-                       'Screening Reject': '#85C1E9',# Light Blue
-                       'R1 Reject': '#AED6F1',       # Very Light Blue
-                       'R2 Reject': '#D6EAF8'        # Faded Blue
-                   })
-    st.plotly_chart(fig_hm, use_container_width=True)
+    hm_data = df_chart.groupby(['HM Details', 'Chart_Category']).size().reset_index(name='Count')
+
+    color_map = {
+        "Selected": "#2E7D32",
+        "Pending/Active": "#1976D2",
+        "Rejected": "#D32F2F",
+        "Screening Reject": "#F57C00",
+        "R1 Reject": "#C62828",
+        "R2 Reject": "#B71C1C",
+        "R3 Reject": "#8E0000",
+        "Other Reject": "#6D0000",
+        "Other": "#6B7280",
+    }
+
+    # Cleaner stacked bar view
+    fig_hm = px.bar(
+        hm_data,
+        x="HM Details",
+        y="Count",
+        color="Chart_Category",
+        barmode="stack",
+        color_discrete_map=color_map,
+    )
+    fig_hm.update_layout(xaxis_title=None, yaxis_title="Candidates", legend_title_text=None)
+    st.plotly_chart(fig_hm, width="stretch")
 
 with col_right:
     st.subheader("Rejection by Round")
-    reject_df = df[df['Dashboard_Category'].str.contains('Reject')]
-    
-    # Pie chart using the blue sequential palette
-    fig_reject = px.pie(reject_df, names='Dashboard_Category', hole=0.4,
-                       color_discrete_sequence=px.colors.sequential.Blues_r)
-    st.plotly_chart(fig_reject, use_container_width=True)
+    reject_df = df_chart[df_chart['Chart_Category'].str.contains('Reject', na=False)]
+
+    if len(reject_df) == 0:
+        st.info("No rejected candidates in the current selection.")
+    else:
+        fig_reject = px.pie(
+            reject_df,
+            names="Chart_Category",
+            hole=0.4,
+            color="Chart_Category",
+            color_discrete_map=color_map,
+        )
+        fig_reject.update_layout(legend_title_text=None)
+        st.plotly_chart(fig_reject, width="stretch")
 
 # Data Table for deeper look
 st.subheader("Candidate Details")
-st.dataframe(df[['Candidate Name', 'HM Details', 'Skill', 'Status', 'Dashboard_Category', 'Recruiter Name']], use_container_width=True)
+st.dataframe(
+    df[['Candidate Name', 'HM Details', 'Skill', 'Status', 'Dashboard_Category', 'Recruiter Name']],
+    width="stretch",
+)
