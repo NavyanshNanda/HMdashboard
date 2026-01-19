@@ -118,24 +118,24 @@ with st.sidebar:
     max_date = df_raw['Sourcing Date'].max()
     date_range = st.date_input("Sourcing Date Range", [min_date, max_date])
     
-    # Select Filters
-    hm_filter = st.multiselect("Hiring Manager", options=df_raw['HM Details'].unique())
-    skill_filter = st.multiselect("Skill", options=df_raw['Skill'].unique())
-    loc_filter = st.multiselect("Location", options=df_raw['Location of posting'].unique())
-    recruiter_filter = st.multiselect("Recruiter", options=df_raw['Recruiter Name'].unique())
+    # Expandable Checkbox Filters
+    with st.expander("🏢 Hiring Manager", expanded=False):
+        hm_options = sorted(df_raw['HM Details'].dropna().unique())
+        hm_filter = [hm for hm in hm_options if st.checkbox(hm, key=f"hm_{hm}")]
+    
+    with st.expander("💼 Skill", expanded=False):
+        skill_options = sorted(df_raw['Skill'].dropna().unique())
+        skill_filter = [skill for skill in skill_options if st.checkbox(skill, key=f"skill_{skill}")]
+    
+    with st.expander("📍 Location", expanded=False):
+        loc_options = sorted(df_raw['Location of posting'].dropna().unique())
+        loc_filter = [loc for loc in loc_options if st.checkbox(loc, key=f"loc_{loc}")]
+    
+    with st.expander("👤 Recruiter", expanded=False):
+        recruiter_options = sorted(df_raw['Recruiter Name'].dropna().unique())
+        recruiter_filter = [recruiter for recruiter in recruiter_options if st.checkbox(recruiter, key=f"recruiter_{recruiter}")]
+    
     name_search = st.text_input("Search Candidate Name")
-
-    # Reject view controls
-    reject_view = st.selectbox(
-        "Rejects View",
-        options=["Combined (default)", "By Round"],
-        help="Default combines all rejects into one bucket. 'By Round' breaks rejects into R1/R2/R3.",
-    )
-    reject_round_filter = st.selectbox(
-        "Reject Round (when 'By Round')",
-        options=["All", "R1", "R2", "R3"],
-        disabled=(reject_view != "By Round"),
-    )
 
 # Apply Filters
 df = df_raw.copy()
@@ -146,25 +146,6 @@ if skill_filter: df = df[df['Skill'].isin(skill_filter)]
 if loc_filter: df = df[df['Location of posting'].isin(loc_filter)]
 if recruiter_filter: df = df[df['Recruiter Name'].isin(recruiter_filter)]
 if name_search: df = df[df['Candidate Name'].str.contains(name_search, case=False)]
-
-# Build a chart-friendly category that consolidates rejects by default
-df_chart = df.copy()
-if reject_view == "Combined (default)":
-    df_chart["Chart_Category"] = df_chart["Dashboard_Category"].where(
-        df_chart["Dashboard_Category"] != "Rejected", "Rejected"
-    )
-else:
-    # Break rejects into R1/R2/R3 when possible
-    def _chart_category(row):
-        if row["Dashboard_Category"] != "Rejected":
-            return row["Dashboard_Category"]
-        rr = row.get("Reject_Round")
-        return f"{rr} Reject" if rr in {"R1", "R2", "R3"} else "Other Reject"
-
-    df_chart["Chart_Category"] = df_chart.apply(_chart_category, axis=1)
-    if reject_round_filter != "All":
-        # In by-round mode, optionally focus charts on just one round of rejects
-        df_chart = df_chart[df_chart["Chart_Category"] == f"{reject_round_filter} Reject"]
 
 # 4. Main Dashboard UI
 st.title("Candidate Clearance Overview")
@@ -201,59 +182,81 @@ with m4:
 
 st.divider()
 
-# 4. Charts Row (Updated with Blue Tones)
-col_left, col_right = st.columns([2, 1])
+# 4. Funnel Chart - Recruitment Pipeline
+st.subheader("Recruitment Pipeline Funnel")
 
-# Define a Professional Blue Palette
-blue_palette = ['#003f5c', '#2f4b7c', '#665191', '#a05195', '#d45087']
+# Calculate funnel metrics
+total_candidates = len(df)
+screening_rejected = len(df[df['Dashboard_Category'] == 'Screening Reject'])
+interview_rejected = len(df[df['Dashboard_Category'] == 'Rejected'])
+shortlisted = len(df[df['Dashboard_Category'] == 'Pending/Active'])
+selected = len(df[df['Dashboard_Category'] == 'Selected'])
 
-with col_left:
-    st.subheader("HM Performance Breakdown")
-    hm_data = df_chart.groupby(['HM Details', 'Chart_Category']).size().reset_index(name='Count')
+# Create funnel data (Total at top, Selected at bottom, left-aligned)
+funnel_data = {
+    'Stage': ['Total Candidates', 'After Screening', 'After Interviews', 'Shortlisted', 'Selected'],
+    'Count': [total_candidates, total_candidates - screening_rejected, total_candidates - screening_rejected - interview_rejected, shortlisted, selected]
+}
+funnel_df = pd.DataFrame(funnel_data)
 
-    color_map = {
-        "Selected": "#2E7D32",
-        "Pending/Active": "#1976D2",
-        "Rejected": "#D32F2F",
-        "Screening Reject": "#F57C00",
-        "R1 Reject": "#C62828",
-        "R2 Reject": "#B71C1C",
-        "R3 Reject": "#8E0000",
-        "Other Reject": "#6D0000",
-        "Other": "#6B7280",
-    }
+# Create left-aligned funnel chart using horizontal bar
+fig_funnel = px.bar(
+    funnel_df,
+    y='Stage',
+    x='Count',
+    orientation='h',
+    color='Stage',
+    color_discrete_sequence=['#66BB6A', '#1976D2', '#FF6F00', '#FFC107', '#5C6BC0'],
+    text='Count'
+)
+fig_funnel.update_layout(
+    height=400,
+    showlegend=False,
+    xaxis_title="Number of Candidates",
+    yaxis_title=None,
+    xaxis=dict(showgrid=True),
+    yaxis=dict(categoryorder='array', categoryarray=['Selected', 'Shortlisted', 'After Interviews', 'After Screening', 'Total Candidates']),
+)
+fig_funnel.update_traces(textposition='outside')
+st.plotly_chart(fig_funnel, use_container_width=True)
 
-    # Cleaner stacked bar view
-    fig_hm = px.bar(
-        hm_data,
-        x="HM Details",
-        y="Count",
-        color="Chart_Category",
-        barmode="stack",
-        color_discrete_map=color_map,
-    )
-    fig_hm.update_layout(xaxis_title=None, yaxis_title="Candidates", legend_title_text=None)
-    st.plotly_chart(fig_hm, width="stretch")
+# Display Pending candidates info below funnel
+pending_info = f"**Pending/Active Candidates:** {len(df[df['Dashboard_Category'] == 'Pending/Active'])} candidates currently in the pipeline"
+st.info(pending_info)
 
-with col_right:
-    st.subheader("Rejection by Round")
-    reject_df = df_chart[df_chart['Chart_Category'].str.contains('Reject', na=False)]
+# 5. Candidate-Specific KPIs
+st.subheader("Candidate Metrics")
 
-    if len(reject_df) == 0:
-        st.info("No rejected candidates in the current selection.")
+# Prepare KPI data for candidates
+kpi_columns = ['Candidate Name', 'HM Details', 'Skill', 'Status', 'Dashboard_Category', 'TTF (60 days)', 'TTH (30 days)']
+df_kpi = df[kpi_columns].copy()
+df_kpi.columns = ['Candidate Name', 'HM', 'Skill', 'Status', 'Category', 'TTF', 'TTH']
+
+# Rename columns for display and convert to numeric where possible
+df_kpi_display = df_kpi.copy()
+df_kpi_display['TTF'] = pd.to_numeric(df_kpi_display['TTF'], errors='coerce')
+df_kpi_display['TTH'] = pd.to_numeric(df_kpi_display['TTH'], errors='coerce')
+
+# Calculate Quality of Hire (based on joining status)
+def quality_of_hire(row):
+    if row['Category'] == 'Selected':
+        return 'High'
+    elif row['Category'] == 'Pending/Active':
+        return 'In Progress'
     else:
-        fig_reject = px.pie(
-            reject_df,
-            names="Chart_Category",
-            hole=0.4,
-            color="Chart_Category",
-            color_discrete_map=color_map,
-        )
-        fig_reject.update_layout(legend_title_text=None)
-        st.plotly_chart(fig_reject, width="stretch")
+        return 'Not Selected'
+
+df_kpi_display['Quality of Hire'] = df_kpi_display.apply(quality_of_hire, axis=1)
+
+# Display as a formatted dataframe
+st.dataframe(
+    df_kpi_display[['Candidate Name', 'HM', 'Skill', 'TTF', 'TTH', 'Quality of Hire']],
+    use_container_width=True,
+    height=400
+)
 
 # Data Table for deeper look
-st.subheader("Candidate Details")
+st.subheader("Full Candidate Details")
 st.dataframe(
     df[['Candidate Name', 'HM Details', 'Skill', 'Status', 'Dashboard_Category', 'Recruiter Name']],
     width="stretch",
