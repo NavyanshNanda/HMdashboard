@@ -53,11 +53,12 @@ def load_and_clean_data():
     df['Sourcing Date'] = pd.to_datetime(df['Sourcing Date'], errors='coerce')
 
     # Define Grouping Logic
-    selected_list = {'selected', 'joined', 'internship letter shared', 'yes'}
+    joined_list = {'joined', 'internship letter shared'}
+    selected_list = {'selected', 'yes', 'shortlisted'}
     rejected_list = {'rejected', 'rejected in r1', 'rejected in r2', 'rejected in technical screening', 'offer declined...'}
     screening_list = {'screening reject'}
     pending_list = {
-        'in process', 'under discussion', 'shortlisted',
+        'in process', 'under discussion',
         'pending at r1', 'pending at r2', 'pending at r3',
         'on hold',
         'scheduled for r1', 'scheduled for r2', 'scheduled for r3',
@@ -78,6 +79,8 @@ def load_and_clean_data():
         if status_txt == "" or status_lc == "nan":
             return ('Pending/Active', None)
 
+        if status_lc in joined_list:
+            return ('Joined', None)
         if status_lc in selected_list:
             return ('Selected', None)
         if status_lc in screening_list:
@@ -151,31 +154,37 @@ if name_search: df = df[df['Candidate Name'].str.contains(name_search, case=Fals
 st.title("Candidate Clearance Overview")
 
 # Top Metrics Row with Colored Blocks (Like your reference image)
-m1, m2, m3, m4 = st.columns(4)
+m1, m2, m3, m4, m5 = st.columns(5)
 
 # Data for blocks
 total_val = len(df)
-selected_val = len(df[df['Dashboard_Category'] == 'Selected'])
 rejected_val = len(df[df['Dashboard_Category'] == 'Rejected'])
+selected_val = len(df[df['Dashboard_Category'] == 'Selected'])
+joined_val = len(df[df['Dashboard_Category'] == 'Joined'])
 pending_val = len(df[df['Dashboard_Category'] == 'Pending/Active'])
 
-# Rendering Blocks
+# Rendering Blocks (Order: Total, Rejections, Selected, Joined, Pending)
 with m1:
     st.markdown(f"""<div class="kpi-card" style="background-color: #5C6BC0;">
         <h3>Total Candidates</h3><h2>{total_val}</h2>
     </div>""", unsafe_allow_html=True)
 
 with m2:
-    st.markdown(f"""<div class="kpi-card" style="background-color: #66BB6A;">
-        <h3>Selected</h3><h2>{selected_val}</h2>
-    </div>""", unsafe_allow_html=True)
-
-with m3:
     st.markdown(f"""<div class="kpi-card" style="background-color: #EF5350;">
         <h3>Rejections</h3><h2>{rejected_val}</h2>
     </div>""", unsafe_allow_html=True)
 
+with m3:
+    st.markdown(f"""<div class="kpi-card" style="background-color: #FFC107;">
+        <h3>Selected</h3><h2>{selected_val}</h2>
+    </div>""", unsafe_allow_html=True)
+
 with m4:
+    st.markdown(f"""<div class="kpi-card" style="background-color: #66BB6A;">
+        <h3>Joined</h3><h2>{joined_val}</h2>
+    </div>""", unsafe_allow_html=True)
+
+with m5:
     st.markdown(f"""<div class="kpi-card" style="background-color: #26C6DA;">
         <h3>Pending</h3><h2>{pending_val}</h2>
     </div>""", unsafe_allow_html=True)
@@ -189,13 +198,13 @@ st.subheader("Recruitment Pipeline Funnel")
 total_candidates = len(df)
 screening_rejected = len(df[df['Dashboard_Category'] == 'Screening Reject'])
 interview_rejected = len(df[df['Dashboard_Category'] == 'Rejected'])
-shortlisted = len(df[df['Dashboard_Category'] == 'Pending/Active'])
-selected = len(df[df['Dashboard_Category'] == 'Selected'])
+shortlisted = len(df[df['Dashboard_Category'] == 'Selected'])
+joined = len(df[df['Dashboard_Category'] == 'Joined'])
 
-# Create funnel data (Total at top, Selected at bottom, left-aligned)
+# Create funnel data (Total at top, Joined at bottom, left-aligned)
 funnel_data = {
-    'Stage': ['Total Candidates', 'After Screening', 'After Interviews', 'Shortlisted', 'Selected'],
-    'Count': [total_candidates, total_candidates - screening_rejected, total_candidates - screening_rejected - interview_rejected, shortlisted, selected]
+    'Stage': ['Total Candidates', 'After Screening', 'After Interviews', 'Shortlisted', 'Joined'],
+    'Count': [total_candidates, total_candidates - screening_rejected, total_candidates - screening_rejected - interview_rejected, shortlisted, joined]
 }
 funnel_df = pd.DataFrame(funnel_data)
 
@@ -215,7 +224,7 @@ fig_funnel.update_layout(
     xaxis_title="Number of Candidates",
     yaxis_title=None,
     xaxis=dict(showgrid=True),
-    yaxis=dict(categoryorder='array', categoryarray=['Selected', 'Shortlisted', 'After Interviews', 'After Screening', 'Total Candidates']),
+    yaxis=dict(categoryorder='array', categoryarray=['Joined', 'Shortlisted', 'After Interviews', 'After Screening', 'Total Candidates']),
 )
 fig_funnel.update_traces(textposition='outside')
 st.plotly_chart(fig_funnel, use_container_width=True)
