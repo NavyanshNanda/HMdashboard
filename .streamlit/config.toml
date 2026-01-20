@@ -1,0 +1,11 @@
+[theme]
+# Force light mode regardless of system preferences
+base="light"
+primaryColor="#667eea"
+backgroundColor="#f8fafc"
+secondaryBackgroundColor="#ffffff"
+textColor="#1e293b"
+font="sans serif"
+
+[browser]
+gatherUsageStats = false
